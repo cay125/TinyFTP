@@ -12,6 +12,8 @@
 #include <string>
 #include <map>
 
+class ftpDataUnit;
+
 namespace fs=std::filesystem;
 
 class Server
@@ -24,18 +26,10 @@ public:
     void Stop();
 
 private:
+    int listenControlPort = 0;
     std::map<int, std::string> monthToEn;
-    std::string currentStatus;
-    std::string currentBody;
-    int controlPort = -1;
-    int transferPort = 46301;
-    int controlClientPort = -1;
     event_base *base = nullptr;
     evconnlistener *controlEvconn = nullptr;
-    evconnlistener *transferEvconn = nullptr;
-    bufferevent *controlBuff = nullptr;
-    bufferevent *transferBuff = nullptr;
-    fs::path currentPath;
     std::string RESPONSE_502 = "502 Command not implemented\r\n";
     std::string RESPONSE_220 = "220 (Tiny ftpServer)\r\n";
     std::string RESPONSE_530 = "530 Please login with USER and PASS\r\n";
@@ -54,11 +48,11 @@ private:
 
     void initMonthToEn();
 
-    void sendLISTbuf();
+    void sendLISTbuf(ftpDataUnit *unit);
 
-    void sendRETRbuf();
+    void sendRETRbuf(ftpDataUnit *unit);
 
-    void eventHandler(bufferevent *bev);
+    void eventHandler(bufferevent *bev, ftpDataUnit *unit);
 
     static void listenControl(struct evconnlistener *, evutil_socket_t, struct sockaddr *, int socklen, void *);
 

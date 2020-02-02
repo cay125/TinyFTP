@@ -3,6 +3,7 @@
 //
 
 #include "../inc/Server.hpp"
+#include "../inc/ftpDataUnit.hpp"
 #include <netinet/in.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -14,26 +15,17 @@
 
 Server::Server(int Port)
 {
-    controlPort = Port;
-    currentPath = fs::path(std::getenv("HOME"));
-    std::ostringstream ostr;
-    ostr << transferPort / 256 << "," << transferPort % 256 << ").\r\n";
-    RESPONSE_227 += ostr.str();
     initMonthToEn();
+    listenControlPort = Port;
     base = event_base_new();
     sockaddr_in sin;
     memset(&sin, 0, sizeof(sin));
     sin.sin_family = AF_INET;
-    sin.sin_port = htons(controlPort);
+    sin.sin_port = htons(Port);
 
     controlEvconn = evconnlistener_new_bind(base, Server::listenControl, this,
                                             LEV_OPT_REUSEABLE | LEV_OPT_CLOSE_ON_FREE, -1, (sockaddr *) &sin,
                                             sizeof(sin));
-    sin.sin_port = htons(transferPort);
-    transferEvconn = evconnlistener_new_bind(base, Server::listenTransfer, this,
-                                             LEV_OPT_CLOSE_ON_FREE | LEV_OPT_REUSEABLE, -1, (sockaddr *) &sin,
-                                             sizeof(sin));
-
 }
 
 void Server::initMonthToEn()
@@ -48,69 +40,67 @@ void Server::listenControl(struct evconnlistener *listener, int fd, struct socka
     event_base *_base = evconnlistener_get_base(listener);
     bufferevent *bev = bufferevent_socket_new(_base, fd, BEV_OPT_CLOSE_ON_FREE);
     auto srv_p = static_cast<Server *>(arg);
-    if (srv_p->controlClientPort == -1)
-    {
-        sockaddr_in *clientAddr = (sockaddr_in *) addr;
-        srv_p->controlClientPort = ntohs(clientAddr->sin_port);
-    }
-    bufferevent_setcb(bev, Server::readCB, Server::writeCB, Server::eventCB, arg);
+    sockaddr_in *clientAddr = (sockaddr_in *) addr;
+    auto *unit = new ftpDataUnit(srv_p, ntohs(clientAddr->sin_port));
+    bufferevent_setcb(bev, Server::readCB, Server::writeCB, Server::eventCB, unit);
     bufferevent_enable(bev, EV_READ | EV_WRITE);
     bufferevent_write(bev, srv_p->RESPONSE_220.c_str(), srv_p->RESPONSE_220.length());
-    srv_p->controlBuff = bev;
+    unit->controlBuff = bev;
 }
 
 void Server::listenTransfer(struct evconnlistener *listener, int fd, struct sockaddr *, int socklen, void *arg)
 {
-    auto srv_p = static_cast<Server *>(arg);
-    if (srv_p->controlClientPort == -1)
-        return;
+    auto unit = static_cast<ftpDataUnit *>(arg);
+    auto srv_p = unit->srv_p;
     event_base *_base = evconnlistener_get_base(listener);
-    srv_p->transferBuff = bufferevent_socket_new(_base, fd, BEV_OPT_CLOSE_ON_FREE);
-    bufferevent_setcb(srv_p->transferBuff, Server::readTransfer, Server::writeTransfer, Server::eventTRansfer, arg);
-    bufferevent_enable(srv_p->transferBuff, EV_READ | EV_WRITE);
-    if (srv_p->currentStatus == "onLIST")
+    if (unit->transferBuff != nullptr)
+        std::cout << "error when get one connection (transferBuff should be null).\r";
+    unit->transferBuff = bufferevent_socket_new(_base, fd, BEV_OPT_CLOSE_ON_FREE);
+    bufferevent_setcb(unit->transferBuff, Server::readTransfer, Server::writeTransfer, Server::eventTRansfer, arg);
+    bufferevent_enable(unit->transferBuff, EV_READ | EV_WRITE);
+    if (unit->currentStatus == "onLIST")
     {
         std::string response_buf = srv_p->RESPONSE_150 + "Here comes the directory listing.\r\n";
-        bufferevent_write(srv_p->controlBuff, response_buf.c_str(), response_buf.length());
-        srv_p->sendLISTbuf();
+        bufferevent_write(unit->controlBuff, response_buf.c_str(), response_buf.length());
+        srv_p->sendLISTbuf(unit);
     }
-    else if (srv_p->currentStatus == "onRETR")
+    else if (unit->currentStatus == "onRETR")
     {
-        fs::path filePath = srv_p->currentPath / srv_p->currentBody;
+        fs::path filePath = unit->currentPath / unit->currentBody;
         if (!fs::exists(filePath))
         {
             std::cout << "file transfer error: file not exists\n";
             return;
         }
         std::ostringstream ostr;
-        ostr << srv_p->RESPONSE_150 + "Opening BINARY mode data connection for " + srv_p->currentBody << " ("
+        ostr << srv_p->RESPONSE_150 + "Opening BINARY mode data connection for " + unit->currentBody << " ("
              << fs::file_size(filePath) << " bytes).\r\n";
         std::string response_buf = ostr.str();
-        bufferevent_write(srv_p->controlBuff, response_buf.c_str(), response_buf.length());
-        srv_p->sendRETRbuf();
+        bufferevent_write(unit->controlBuff, response_buf.c_str(), response_buf.length());
+        srv_p->sendRETRbuf(unit);
     }
-    else if (srv_p->currentStatus == "onSTOR")
+    else if (unit->currentStatus == "onSTOR")
     {
         std::string response_buf = srv_p->RESPONSE_150 + "Ok to send data.\r\n";
-        bufferevent_write(srv_p->controlBuff, response_buf.c_str(), response_buf.length());
+        bufferevent_write(unit->controlBuff, response_buf.c_str(), response_buf.length());
     }
 }
 
-void Server::sendRETRbuf()
+void Server::sendRETRbuf(ftpDataUnit *unit)
 {
-    fs::path filePath = currentPath / currentBody;
+    fs::path filePath = unit->currentPath / unit->currentBody;
     int fd = open(filePath.string().c_str(), O_RDONLY);
     if (fd == -1)
         std::cout << "open file failed\n";
-    if (evbuffer_add_file(bufferevent_get_output(transferBuff), fd, 0, -1))
+    if (evbuffer_add_file(bufferevent_get_output(unit->transferBuff), fd, 0, -1))
         std::cout << "send file failed\n";
 }
 
-void Server::sendLISTbuf()
+void Server::sendLISTbuf(ftpDataUnit *unit)
 {
     int offset = 0;
     std::vector<std::string> temp;
-    for (auto &it:fs::directory_iterator(currentPath))
+    for (auto &it:fs::directory_iterator(unit->currentPath))
     {
         std::string info = getFileInfo(it.path());
         offset += info.length();
@@ -123,24 +113,26 @@ void Server::sendLISTbuf()
         memcpy(infobuf + offset, it.c_str(), it.length());
         offset += it.length();
     }
-    if (transferBuff != nullptr)
+    if (unit->transferBuff != nullptr)
     {
-        bufferevent_write(transferBuff, infobuf, offset);
+        bufferevent_write(unit->transferBuff, infobuf, offset);
         std::cout << "write dirs info successfully\n";
     }
     else
+    {
         std::cout << "write dirs info failed\n";
+    }
     delete[]infobuf;
 }
 
 void Server::readCB(struct bufferevent *bev, void *ctx)
 {
     std::cout << "recv coming\n";
-    auto srv_p = static_cast<Server *>(ctx);
-    srv_p->eventHandler(bev);
+    auto unit = static_cast<ftpDataUnit *>(ctx);
+    unit->srv_p->eventHandler(bev, unit);
 }
 
-void Server::eventHandler(bufferevent *bev)
+void Server::eventHandler(bufferevent *bev, ftpDataUnit *unit)
 {
     char buf[4096];
     int n = 0;
@@ -200,7 +192,7 @@ void Server::eventHandler(bufferevent *bev)
     else if (request == "PWD")
     {
         //std::cout << "Get command PWD\n";
-        std::string path = RESPONSE_257 + "\"" + currentPath.string() + "\"" + " is the current directory.\r\n";
+        std::string path = RESPONSE_257 + "\"" + unit->currentPath.string() + "\"" + " is the current directory.\r\n";
         bufferevent_write(bev, path.c_str(), path.length());
     }
     else if (request == "TYPE")
@@ -211,12 +203,32 @@ void Server::eventHandler(bufferevent *bev)
     else if (request == "PASV")
     {
         //std::cout << "Get command PASV\n";
-        bufferevent_write(bev, RESPONSE_227.c_str(), RESPONSE_227.length());
+        sockaddr_in sin;
+        memset(&sin, 0, sizeof(sin));
+        sin.sin_family = AF_INET;
+        sin.sin_port = htons(0);
+        if (unit->transferEvconn != nullptr)
+        {
+            evconnlistener_free(unit->transferEvconn);
+            unit->transferEvconn = nullptr;
+        }
+        unit->transferEvconn = evconnlistener_new_bind(base, listenTransfer, unit,
+                                                       LEV_OPT_REUSEABLE | LEV_OPT_CLOSE_ON_FREE, -1, (sockaddr *) &sin,
+                                                       sizeof(sin));
+        int fd = evconnlistener_get_fd(unit->transferEvconn);
+        socklen_t sinlen = sizeof(sin);
+        getsockname(fd, (sockaddr *) &sin, &sinlen);
+        unit->listenTransferPort = ntohs(sin.sin_port);
+        std::cout << "one transfer connection listen on: " << unit->listenTransferPort << std::endl;
+        std::ostringstream ostr;
+        ostr << RESPONSE_227 << unit->listenTransferPort / 256 << "," << unit->listenTransferPort % 256 << ").\r\n";
+        std::string response_buf = ostr.str();
+        bufferevent_write(bev, response_buf.c_str(), response_buf.length());
     }
     else if (request == "LIST")
     {
         //std::cout << "Get command LIST\n";
-        currentStatus = "onLIST";
+        unit->currentStatus = "onLIST";
     }
     else if (request == "CWD")
     {
@@ -225,13 +237,14 @@ void Server::eventHandler(bufferevent *bev)
         if (fs::path(body).is_absolute())
             desiredPath = fs::path(body);
         else
-            desiredPath = currentPath / body;
+            desiredPath = unit->currentPath / body;
         if (body == "..")
             desiredPath = fs::canonical(desiredPath);
         if (fs::exists(desiredPath) && fs::is_directory(desiredPath))
         {
-            currentPath = desiredPath;
-            std::cout << "current dir is: " << currentPath.string() << "\n";
+            unit->currentPath = desiredPath;
+            std::cout << "client port: " << unit->clientControlPort << " current dir is: " << unit->currentPath.string()
+                      << "\n";
             bufferevent_write(bev, RESPONSE_250.c_str(), RESPONSE_250.length());
         }
         else
@@ -243,19 +256,19 @@ void Server::eventHandler(bufferevent *bev)
     else if (request == "RETR")
     {
         //std::cout << "Get command RETR\n";
-        currentStatus = "onRETR";
-        currentBody = body;
+        unit->currentStatus = "onRETR";
+        unit->currentBody = body;
     }
     else if (request == "STOR")
     {
         //std::cout << "Get command STOR\n";
-        currentStatus = "onSTOR";
-        currentBody = body;
+        unit->currentStatus = "onSTOR";
+        unit->currentBody = body;
     }
     else if (request == "MKD")
     {
         //std::cout << "Get command MKD\n";
-        fs::path desiredPath = currentPath / body;
+        fs::path desiredPath = unit->currentPath / body;
         fs::create_directories(desiredPath);
         if (fs::exists(desiredPath) && fs::is_directory(desiredPath))
         {
@@ -330,15 +343,15 @@ void Server::eventCB(struct bufferevent *bev, short what, void *ctx)
     else if (what | BEV_EVENT_ERROR)
         std::cout << "one error happend\n";
     bufferevent_free(bev);
-    auto srv_p = static_cast<Server *>(ctx);
-    srv_p->controlClientPort = -1;
+    auto unit = static_cast<ftpDataUnit *>(ctx);
+    delete unit;
 }
 
 void Server::readTransfer(struct bufferevent *bev, void *ctx)
 {
-    auto srv_p = static_cast<Server *>(ctx);
+    auto unit = static_cast<ftpDataUnit *>(ctx);
     std::cout << "transfer coming\n";
-    fs::path filePath = srv_p->currentPath / srv_p->currentBody;
+    fs::path filePath = unit->currentPath / unit->currentBody;
     std::fstream out(filePath.string(), std::ios::out | std::ios::binary | std::ios::app);
     int n = 0;
     char buf[8192] = {0};
@@ -352,38 +365,42 @@ void Server::readTransfer(struct bufferevent *bev, void *ctx)
 
 void Server::writeTransfer(struct bufferevent *bev, void *ctx)
 {
-    auto srv_p = static_cast<Server *>(ctx);
-    if (srv_p->currentStatus == "onLIST")
+    auto unit = static_cast<ftpDataUnit *>(ctx);
+    auto srv_p = unit->srv_p;
+    if (unit->currentStatus == "onLIST")
     {
         std::string response_buf = srv_p->RESPONSE_226 + "Directory send ok.\r\n";
-        bufferevent_write(srv_p->controlBuff, response_buf.c_str(), response_buf.length());
-        srv_p->currentStatus = "finishLIST";
+        bufferevent_write(unit->controlBuff, response_buf.c_str(), response_buf.length());
+        unit->currentStatus = "finishLIST";
         std::cout << "LIST command finished\n";
-        bufferevent_free(srv_p->transferBuff);
-        srv_p->transferBuff = nullptr;
+        bufferevent_free(unit->transferBuff);
+        unit->transferBuff = nullptr;
+        std::cout << "one transfer connection closed: " << unit->listenTransferPort << std::endl;
     }
-    else if (srv_p->currentStatus == "onRETR")
+    else if (unit->currentStatus == "onRETR")
     {
         std::string response_buf = srv_p->RESPONSE_226 + "Transfer complete.\r\n";
-        bufferevent_write(srv_p->controlBuff, response_buf.c_str(), response_buf.length());
-        srv_p->currentStatus = "finishRETR";
+        bufferevent_write(unit->controlBuff, response_buf.c_str(), response_buf.length());
+        unit->currentStatus = "finishRETR";
         std::cout << "RETR command finished\n";
-        bufferevent_free(srv_p->transferBuff);
-        srv_p->transferBuff = nullptr;
+        bufferevent_free(unit->transferBuff);
+        unit->transferBuff = nullptr;
+        std::cout << "one transfer connection closed: " << unit->listenTransferPort << std::endl;
     }
 }
 
 void Server::eventTRansfer(struct bufferevent *bev, short what, void *ctx)
 {
-    auto srv_p = static_cast<Server *>(ctx);
+    auto unit = static_cast<ftpDataUnit *>(ctx);
+    auto srv_p = unit->srv_p;
     if (what | BEV_EVENT_EOF)
     {
         std::cout << "transfer connction closed\n";
-        if (srv_p->currentStatus == "onSTOR")
+        if (unit->currentStatus == "onSTOR")
         {
             std::string response_buf = srv_p->RESPONSE_226 + "Transfer complete.\r\n";
-            bufferevent_write(srv_p->controlBuff, response_buf.c_str(), response_buf.length());
-            srv_p->currentStatus = "finishSTOR";
+            bufferevent_write(unit->controlBuff, response_buf.c_str(), response_buf.length());
+            unit->currentStatus = "finishSTOR";
             std::cout << "STOR command finished\n";
         }
 
@@ -393,12 +410,13 @@ void Server::eventTRansfer(struct bufferevent *bev, short what, void *ctx)
         std::cout << "one error happend\n";
     }
     bufferevent_free(bev);
-    srv_p->transferBuff = nullptr;
+    unit->transferBuff = nullptr;
+    std::cout << "one transfer connection closed: " << unit->listenTransferPort << std::endl;
 }
 
 void Server::Run()
 {
-    std::cout << "server start running on port: " << controlPort << std::endl;
+    std::cout << "server start running on port: " << listenControlPort << std::endl;
     event_base_dispatch(base);
 }
 
@@ -408,6 +426,14 @@ void Server::Stop()
     event_base_free(base);
     if (controlEvconn != nullptr)
         evconnlistener_free(controlEvconn);
-    if (transferBuff != nullptr)
-        evconnlistener_free(transferEvconn);
+}
+
+ftpDataUnit::ftpDataUnit(Server *_srv_p, int _port)
+{
+    srv_p = _srv_p;
+    clientControlPort = _port;
+    transferEvconn = nullptr;
+    controlBuff = nullptr;
+    transferBuff = nullptr;
+    currentPath = fs::path(std::getenv("HOME"));
 }
