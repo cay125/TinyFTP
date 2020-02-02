@@ -7,6 +7,8 @@
 #include <netinet/in.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <pwd.h>
+#include <unistd.h>
 #include <event2/buffer.h>
 #include <string.h>
 #include <iostream>
@@ -16,6 +18,7 @@
 Server::Server(int Port)
 {
     initMonthToEn();
+    getCurrentUser();
     listenControlPort = Port;
     base = event_base_new();
     sockaddr_in sin;
@@ -26,6 +29,13 @@ Server::Server(int Port)
     controlEvconn = evconnlistener_new_bind(base, Server::listenControl, this,
                                             LEV_OPT_REUSEABLE | LEV_OPT_CLOSE_ON_FREE, -1, (sockaddr *) &sin,
                                             sizeof(sin));
+}
+
+void Server::getCurrentUser()
+{
+    uid_t userid = getuid();
+    passwd *pwd = getpwuid(userid);
+    currentUser = pwd->pw_name;
 }
 
 void Server::initMonthToEn()
@@ -46,6 +56,7 @@ void Server::listenControl(struct evconnlistener *listener, int fd, struct socka
     bufferevent_enable(bev, EV_READ | EV_WRITE);
     bufferevent_write(bev, srv_p->RESPONSE_220.c_str(), srv_p->RESPONSE_220.length());
     unit->controlBuff = bev;
+    std::cout << "one control connection established on: " << ntohs(clientAddr->sin_port) << std::endl;
 }
 
 void Server::listenTransfer(struct evconnlistener *listener, int fd, struct sockaddr *, int socklen, void *arg)
@@ -116,7 +127,7 @@ void Server::sendLISTbuf(ftpDataUnit *unit)
     if (unit->transferBuff != nullptr)
     {
         bufferevent_write(unit->transferBuff, infobuf, offset);
-        std::cout << "write dirs info successfully\n";
+        //std::cout << "write dirs info successfully\n";
     }
     else
     {
@@ -177,12 +188,23 @@ void Server::eventHandler(bufferevent *bev, ftpDataUnit *unit)
     else if (request == "USER")
     {
         //std::cout << "Get command USER\n";
+        unit->inputUser = body;
         bufferevent_write(bev, RESPONSE_331.c_str(), RESPONSE_331.length());
     }
     else if (request == "PASS")
     {
         //std::cout << "Get command PASS\n";
-        bufferevent_write(bev, RESPONSE_230.c_str(), RESPONSE_230.length());
+        unit->inputPass = body;
+        if (unit->inputUser == currentUser)
+        {
+            bufferevent_write(bev, RESPONSE_230.c_str(), RESPONSE_230.length());
+            unit->Verifyed = true;
+        }
+        else
+        {
+            const char *response_buf = "530 Login incorrect.\r\n";
+            bufferevent_write(bev, response_buf, strlen(response_buf));
+        }
     }
     else if (request == "SYST")
     {
@@ -338,12 +360,12 @@ void Server::writeCB(struct bufferevent *bev, void *ctx)
 
 void Server::eventCB(struct bufferevent *bev, short what, void *ctx)
 {
+    auto unit = static_cast<ftpDataUnit *>(ctx);
     if (what | BEV_EVENT_EOF)
-        std::cout << "control connction closed\n";
+        std::cout << "control connction closed: " << unit->clientControlPort << std::endl;
     else if (what | BEV_EVENT_ERROR)
         std::cout << "one error happend\n";
     bufferevent_free(bev);
-    auto unit = static_cast<ftpDataUnit *>(ctx);
     delete unit;
 }
 
@@ -395,7 +417,7 @@ void Server::eventTRansfer(struct bufferevent *bev, short what, void *ctx)
     auto srv_p = unit->srv_p;
     if (what | BEV_EVENT_EOF)
     {
-        std::cout << "transfer connction closed\n";
+        std::cout << "one transfer connection closed: " << unit->listenTransferPort << std::endl;
         if (unit->currentStatus == "onSTOR")
         {
             std::string response_buf = srv_p->RESPONSE_226 + "Transfer complete.\r\n";
@@ -411,7 +433,6 @@ void Server::eventTRansfer(struct bufferevent *bev, short what, void *ctx)
     }
     bufferevent_free(bev);
     unit->transferBuff = nullptr;
-    std::cout << "one transfer connection closed: " << unit->listenTransferPort << std::endl;
 }
 
 void Server::Run()
@@ -436,4 +457,5 @@ ftpDataUnit::ftpDataUnit(Server *_srv_p, int _port)
     controlBuff = nullptr;
     transferBuff = nullptr;
     currentPath = fs::path(std::getenv("HOME"));
+    Verifyed = false;
 }

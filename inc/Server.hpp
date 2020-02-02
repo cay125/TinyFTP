@@ -30,6 +30,7 @@ private:
     std::map<int, std::string> monthToEn;
     event_base *base = nullptr;
     evconnlistener *controlEvconn = nullptr;
+    std::string currentUser;
     std::string RESPONSE_502 = "502 Command not implemented\r\n";
     std::string RESPONSE_220 = "220 (Tiny ftpServer)\r\n";
     std::string RESPONSE_530 = "530 Please login with USER and PASS\r\n";
@@ -47,6 +48,8 @@ private:
     std::string getFileInfo(fs::path);
 
     void initMonthToEn();
+
+    void getCurrentUser();
 
     void sendLISTbuf(ftpDataUnit *unit);
 

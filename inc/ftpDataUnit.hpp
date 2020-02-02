@@ -15,6 +15,9 @@ public:
     bufferevent *transferBuff;
     int clientControlPort = 0;
     int listenTransferPort = 0;
+    bool Verifyed;
+    std::string inputUser;
+    std::string inputPass;
     fs::path currentPath;
     std::string currentStatus;
     std::string currentBody;
