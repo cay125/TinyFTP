@@ -6,6 +6,9 @@
 #include "../inc/ftpDataUnit.hpp"
 #include <netinet/in.h>
 #include <sys/stat.h>
+#include <sys/ioctl.h>
+#include <net/if.h>
+#include <arpa/inet.h>
 #include <fcntl.h>
 #include <pwd.h>
 #include <unistd.h>
@@ -14,11 +17,13 @@
 #include <iostream>
 #include <fstream>
 #include <vector>
+#include <algorithm>
 
 Server::Server(int Port)
 {
     initMonthToEn();
     getCurrentUser();
+    getCurrentIP();
     listenControlPort = Port;
     base = event_base_new();
     sockaddr_in sin;
@@ -36,6 +41,21 @@ void Server::getCurrentUser()
     uid_t userid = getuid();
     passwd *pwd = getpwuid(userid);
     currentUser = pwd->pw_name;
+}
+
+void Server::getCurrentIP()
+{
+    char ipaddr[256];
+    struct sockaddr_in *sin;
+    struct ifreq ifr_ip;
+    int sock_get_ip = socket(AF_INET, SOCK_STREAM, 0);
+    memset(&ifr_ip, 0, sizeof(ifr_ip));
+    strncpy(ifr_ip.ifr_name, "eth0", sizeof(ifr_ip.ifr_name) - 1);
+    ioctl(sock_get_ip, SIOCGIFADDR, &ifr_ip);
+    sin = (struct sockaddr_in *) &ifr_ip.ifr_addr;
+    strcpy(ipaddr, inet_ntoa(sin->sin_addr));
+    close(sock_get_ip);
+    currentIP = ipaddr;
 }
 
 void Server::initMonthToEn()
@@ -242,8 +262,10 @@ void Server::eventHandler(bufferevent *bev, ftpDataUnit *unit)
         getsockname(fd, (sockaddr *) &sin, &sinlen);
         unit->listenTransferPort = ntohs(sin.sin_port);
         std::cout << "one transfer connection listen on: " << unit->listenTransferPort << std::endl;
+        std::string temp_ip = currentIP;
+        std::replace(temp_ip.begin(), temp_ip.end(), '.', ',');
         std::ostringstream ostr;
-        ostr << RESPONSE_227 << unit->listenTransferPort / 256 << "," << unit->listenTransferPort % 256 << ").\r\n";
+        ostr << RESPONSE_227 << temp_ip << "," << unit->listenTransferPort / 256 << "," << unit->listenTransferPort % 256 << ").\r\n";
         std::string response_buf = ostr.str();
         bufferevent_write(bev, response_buf.c_str(), response_buf.length());
     }
@@ -366,6 +388,10 @@ void Server::eventCB(struct bufferevent *bev, short what, void *ctx)
     else if (what | BEV_EVENT_ERROR)
         std::cout << "one error happend\n";
     bufferevent_free(bev);
+    if (unit->transferEvconn != nullptr)
+        evconnlistener_free(unit->transferEvconn);
+    if (unit->transferBuff != nullptr)
+        bufferevent_free(unit->transferBuff);
     delete unit;
 }
 
@@ -437,7 +463,7 @@ void Server::eventTRansfer(struct bufferevent *bev, short what, void *ctx)
 
 void Server::Run()
 {
-    std::cout << "server start running on port: " << listenControlPort << std::endl;
+    std::cout << "server start running on ip: " << currentIP << " port: " << listenControlPort << std::endl;
     event_base_dispatch(base);
 }
 

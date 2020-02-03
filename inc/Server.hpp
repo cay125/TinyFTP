@@ -31,6 +31,7 @@ private:
     event_base *base = nullptr;
     evconnlistener *controlEvconn = nullptr;
     std::string currentUser;
+    std::string currentIP;
     std::string RESPONSE_502 = "502 Command not implemented\r\n";
     std::string RESPONSE_220 = "220 (Tiny ftpServer)\r\n";
     std::string RESPONSE_530 = "530 Please login with USER and PASS\r\n";
@@ -39,7 +40,7 @@ private:
     std::string RESPONSE_215 = "215 Unix type: L8\r\n";
     std::string RESPONSE_257 = "257 ";
     std::string RESPONSE_200 = "200 Switching to binary mode.\r\n";
-    std::string RESPONSE_227 = "227 Entering passive mode (192,168,124,4,";
+    std::string RESPONSE_227 = "227 Entering passive mode (";
     std::string RESPONSE_150 = "150 ";
     std::string RESPONSE_226 = "226 ";
     std::string RESPONSE_250 = "250 Directory successfully changed\r\n";
@@ -50,6 +51,8 @@ private:
     void initMonthToEn();
 
     void getCurrentUser();
+
+    void getCurrentIP();
 
     void sendLISTbuf(ftpDataUnit *unit);
 
