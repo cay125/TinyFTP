@@ -265,7 +265,8 @@ void Server::eventHandler(bufferevent *bev, ftpDataUnit *unit)
         std::string temp_ip = currentIP;
         std::replace(temp_ip.begin(), temp_ip.end(), '.', ',');
         std::ostringstream ostr;
-        ostr << RESPONSE_227 << temp_ip << "," << unit->listenTransferPort / 256 << "," << unit->listenTransferPort % 256 << ").\r\n";
+        ostr << RESPONSE_227 << temp_ip << "," << unit->listenTransferPort / 256 << ","
+             << unit->listenTransferPort % 256 << ").\r\n";
         std::string response_buf = ostr.str();
         bufferevent_write(bev, response_buf.c_str(), response_buf.length());
     }
@@ -331,13 +332,48 @@ void Server::eventHandler(bufferevent *bev, ftpDataUnit *unit)
     }
 }
 
+std::string Server::getFileInfoUseFS(fs::path p)
+{
+    std::string res;
+    if (fs::is_directory(p)) res += 'd';
+    else if (fs::is_block_file(p)) res += 'b';
+    else if (fs::is_character_file(p)) res += 'c';
+    else if (fs::is_symlink(p)) res += 'l';
+    else if (fs::is_socket(p)) res += 's';
+    else if (fs::is_fifo(p)) res += 'p';
+    else res += '-';
+    fs::perms filePerm = fs::status(p).permissions();
+    res += ((filePerm & fs::perms::owner_read) != fs::perms::none ? "r" : "-");
+    res += ((filePerm & fs::perms::owner_write) != fs::perms::none ? "w" : "-");
+    res += ((filePerm & fs::perms::owner_exec) != fs::perms::none ? "x" : "-");
+    res += ((filePerm & fs::perms::group_read) != fs::perms::none ? "r" : "-");
+    res += ((filePerm & fs::perms::group_write) != fs::perms::none ? "w" : "-");
+    res += ((filePerm & fs::perms::group_exec) != fs::perms::none ? "x" : "-");
+    res += ((filePerm & fs::perms::others_read) != fs::perms::none ? "r" : "-");
+    res += ((filePerm & fs::perms::others_write) != fs::perms::none ? "w" : "-");
+    res += ((filePerm & fs::perms::others_exec) != fs::perms::none ? "x" : "-");
+    res += ' ';
+
+    std::ostringstream ostr;
+    ostr << fs::hard_link_count(p) << " ";
+
+    struct stat buf;
+    stat(p.string().c_str(), &buf);
+    ostr << buf.st_uid << " " << buf.st_gid << " " << buf.st_size << " ";
+    res += ostr.str();
+
+    //TODO: return the full file information
+
+    return res;
+}
+
 std::string Server::getFileInfo(fs::path p)
 {
-    const char *filename = p.string().c_str();
+    //const char *filename = p.string().c_str();
     std::ostringstream ostr;
-    std::string res = "";
+    std::string res;
     struct stat buf;
-    stat(filename, &buf);
+    stat(p.string().c_str(), &buf);
     if ((buf.st_mode & S_IFMT) == S_IFDIR)
         res += 'd';
     else if ((buf.st_mode & S_IFMT) == S_IFBLK)

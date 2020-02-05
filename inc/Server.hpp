@@ -48,6 +48,8 @@ private:
 
     std::string getFileInfo(fs::path);
 
+    std::string getFileInfoUseFS(fs::path);
+
     void initMonthToEn();
 
     void getCurrentUser();
