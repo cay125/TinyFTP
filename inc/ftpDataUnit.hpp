@@ -21,9 +21,10 @@ public:
     fs::path currentPath;
     std::string currentStatus;
     std::string currentBody;
+    std::string clientCOntrolIP;
     Server *srv_p;
 
-    ftpDataUnit(Server *, int);
+    ftpDataUnit(Server *, int, char *);
 };
 
 #endif //FILERECV_FTPDATAUNIT_HPP

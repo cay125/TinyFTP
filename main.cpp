@@ -12,6 +12,7 @@ void printSyntax()
 void runAsServer()
 {
     Server srv(8080);
+    srv.EnableCli();
     srv.Run();
 }
 

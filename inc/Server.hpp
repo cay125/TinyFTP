@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <string>
 #include <map>
+#include <set>
 
 class ftpDataUnit;
 
@@ -23,11 +24,16 @@ public:
 
     void Run();
 
+    void EnableCli();
+
     void Stop();
 
 private:
     int listenControlPort = 0;
     std::map<int, std::string> monthToEn;
+    std::set<ftpDataUnit *> setUnit;
+    bool debugInfo = true;
+    event *eventCli = nullptr;
     event_base *base = nullptr;
     evconnlistener *controlEvconn = nullptr;
     std::string currentUser;
@@ -77,6 +83,8 @@ private:
     static void writeTransfer(struct bufferevent *bev, void *ctx);
 
     static void eventTRansfer(struct bufferevent *bev, short what, void *ctx);
+
+    static void cliCB(evutil_socket_t, short, void *);
 
 };
 
